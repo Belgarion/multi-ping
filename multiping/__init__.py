@@ -50,6 +50,7 @@ _IPPROTO_ICMPV6        = (socket.IPPROTO_ICMPV6
                           else 58)
 
 
+SO_TIMESTAMPNS = 35
 class MultiPingError(Exception):
     """
     Exception class for the multiping package.
@@ -190,7 +191,9 @@ class MultiPing(object):
             proto = socket.IPPROTO_ICMP if family == socket.AF_INET \
                     else _IPPROTO_ICMPV6
 
-            return socket.socket(family, socket.SOCK_RAW, proto)
+            sock = socket.socket(family, socket.SOCK_RAW, proto)
+            sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+            return sock
 
         except socket.error as e:
             if e.errno == 1:
@@ -303,7 +306,7 @@ class MultiPing(object):
             # we never sent anything before then we create a first ID
             # 'randomly' from the current time. ID is only a 16 bit field, so
             # need to trim it down.
-            self._last_used_id = int(time.time()) & 0xffff
+            self._last_used_id = int(time.time()*1000) & 0xffff
 
         # Send ICMPecho to all addresses...
         for addr in all_addrs:
@@ -336,12 +339,24 @@ class MultiPing(object):
 
         """
         pkts = []
+
         try:
             self._sock.settimeout(timeout)
             while True:
-                p = self._sock.recv(64)
+                #p = self._sock.recv(64)
+                p, ancdata, flags, address = self._sock.recvmsg(64, 1024)
+                timestamp = time.time()
+                if(len(ancdata)>0):
+                    for i in ancdata:
+                        #print('ancdata: (cmsg_level, cmsg_type, cmsg_data)=(',i[0],",",i[1],", (",len(i[2]),") ",i[2],")");
+                        if(i[0]!=socket.SOL_SOCKET or i[1]!=SO_TIMESTAMPNS):
+                            continue
+                        tmp=(struct.unpack("iiii",i[2]))
+                        timestamp = tmp[0] + tmp[2]*1e-9
+                        #print("SCM_TIMESTAMPNS,", tmp, ", timestamp=",timestamp)
+                        #print("time.time:", time.time())
                 # Store the packet and the current time
-                pkts.append((bytearray(p), time.time()))
+                pkts.append((bytearray(p), timestamp))
                 # Continue the loop to receive any additional packets that
                 # may have arrived at this point. Changing the socket to
                 # non-blocking (by setting the timeout to 0), so that we'll
@@ -368,8 +383,19 @@ class MultiPing(object):
             try:
                 self._sock6.settimeout(timeout)
                 while True:
-                    p = self._sock6.recv(128)
-                    pkts.append((bytearray(p), time.time()))
+                    #p = self._sock6.recv(128)
+                    p, ancdata, flags, address = self._sock6.recvmsg(128, 1024)
+                    timestamp = time.time()
+                    if(len(ancdata)>0):
+                        for i in ancdata:
+                            #print('ancdata: (cmsg_level, cmsg_type, cmsg_data)=(',i[0],",",i[1],", (",len(i[2]),") ",i[2],")");
+                            if(i[0]!=socket.SOL_SOCKET or i[1]!=SO_TIMESTAMPNS):
+                                continue
+                            tmp=(struct.unpack("iiii",i[2]))
+                            timestamp = tmp[0] + tmp[2]*1e-9
+                            #print("SCM_TIMESTAMPNS,", tmp, ", timestamp=",timestamp)
+                            #print("time.time:", time.time())
+                    pkts.append((bytearray(p), timestamp))
                     self._sock6.settimeout(0)
             except socket.timeout:
                 pass
